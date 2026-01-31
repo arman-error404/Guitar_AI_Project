@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Guitar AI</title>
+<style>
+body{
+ background:#0f172a;
+ color:white;
+ font-family:sans-serif;
+ text-align:center;
+}
+.card{
+ background:#020617;
+ padding:20px;
+ margin:20px;
+ border-radius:12px;
+}
+button{
+ padding:10px 20px;
+ background:#22c55e;
+ border:none;
+ border-radius:8px;
+}
+</style>
+</head>
+
+<body>
+
+<h1>🎸 Guitar AI Studio</h1>
+
+<img src="/video" width="640"/>
+
+<div class="card">
+<h3>Style</h3>
+<button onclick="setStyle('starry')">Starry</button>
+<button onclick="setStyle('muse')">Muse</button>
+<button onclick="setStyle('vii')">Vii</button>
+<button onclick="setStyle('off')">Off</button>
+</div>
+
+<div class="card">
+<h3>AI Detection</h3>
+<button onclick="getGuitar()">Guitar</button>
+<button onclick="getChord()">Chord</button>
+
+<p id="out"></p>
+</div>
+
+<script>
+async function setStyle(s){
+ await fetch('/style/'+s,{method:'POST'});
+}
+
+async function getGuitar(){
+ let r = await fetch('/guitar');
+ let d = await r.json();
+ document.getElementById('out').innerText =
+   "Guitar: "+d.class+" ("+d.confidence.toFixed(2)+")";
+}
+
+async function getChord(){
+ let r = await fetch('/chord');
+ let d = await r.json();
+ document.getElementById('out').innerText =
+   "Chord: "+d.class+" ("+d.confidence.toFixed(2)+")";
+}
+</script>
+
+
+</body>
+</html>
