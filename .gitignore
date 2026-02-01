@@ -6,7 +6,8 @@ __pycache__/
 .ipynb_checkpoints/
 models/chord_model.ipynb
 *.wav
+notebook*.ipynb
 *.npy
 *.md
 *.h5
-*.json
+saved_guitars/

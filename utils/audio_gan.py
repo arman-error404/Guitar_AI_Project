@@ -206,8 +206,13 @@ class AudioEnhancementProcessor:
         original_shape = spec.shape
         
         # Resize to expected dimensions if needed
+        # WARNING: Resizing CQT spectrograms can distort frequency structure
+        # Only resize if absolutely necessary (should match 252x256 for CQT)
         if spec.shape != (self.spec_height, self.spec_width):
-            spec = cv2.resize(spec, (self.spec_width, self.spec_height))
+            if spec_type == "cqt":
+                print(f"Warning: CQT spectrogram shape {spec.shape} doesn't match expected {(self.spec_height, self.spec_width)}")
+                print("Resizing may distort frequency information. Check preprocessing.")
+            spec = cv2.resize(spec, (self.spec_width, self.spec_height), interpolation=cv2.INTER_LINEAR)
         
         # Try GAN enhancement first
         if self.use_gan and self.model is not None:
@@ -232,22 +237,27 @@ class AudioEnhancementProcessor:
         Apply GAN-based enhancement to spectrogram
         
         Args:
-            spectrogram: Input spectrogram (H, W)
+            spectrogram: Input spectrogram (H, W) in dB scale (raw values)
             
         Returns:
-            Enhanced spectrogram or None if GAN unavailable
+            Enhanced spectrogram in original dB scale, or None if GAN unavailable
         """
         if not PYTORCH_AVAILABLE or self.model is None:
             return None
         
         try:
-            # Normalize spectrogram to [-1, 1] range
-            # Assuming input is in dB scale (can be negative)
+            # Store original scale for proper denormalization
             spec_min, spec_max = spectrogram.min(), spectrogram.max()
+            
+            # MATCH TRAINING PROCESS EXACTLY:
+            # Step 1: Normalize to [0, 1] (same as training line 102-106)
             if spec_max - spec_min > 1e-6:
-                spec_norm = 2 * (spectrogram - spec_min) / (spec_max - spec_min) - 1
+                spec_norm_01 = (spectrogram - spec_min) / (spec_max - spec_min)
             else:
-                spec_norm = spectrogram.copy()
+                spec_norm_01 = spectrogram.copy()
+            
+            # Step 2: Normalize to [-1, 1] for GAN (same as training line 121)
+            spec_norm = spec_norm_01 * 2 - 1
             
             # Convert to tensor
             spec_tensor = torch.from_numpy(spec_norm).float()
@@ -260,14 +270,19 @@ class AudioEnhancementProcessor:
                 enhanced_tensor = enhanced_tensor.squeeze(0).squeeze(0)  # (H, W)
                 enhanced = enhanced_tensor.cpu().numpy()
             
-            # Denormalize
-            enhanced = (enhanced + 1) / 2  # [0, 1]
-            enhanced = enhanced * (spec_max - spec_min) + spec_min  # Back to original scale
+            # Denormalize: MATCH TRAINING PROCESS IN REVERSE
+            # Step 1: From [-1, 1] back to [0, 1]
+            enhanced_01 = (enhanced + 1) / 2
+            
+            # Step 2: From [0, 1] back to original dB scale
+            enhanced = enhanced_01 * (spec_max - spec_min) + spec_min
             
             return enhanced
             
         except Exception as e:
             print(f"GAN enhancement error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _apply_filter_enhancement(self, spectrogram: np.ndarray) -> np.ndarray:

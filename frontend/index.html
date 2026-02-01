@@ -391,11 +391,12 @@ button.detect-btn:hover {
       <div id="guitar-tab" class="tab-content active">
         <div class="card">
           <h3>🎸 Guitar Type Detection</h3>
-          <button class="detect-btn" onclick="getGuitar()">Detect Guitar Type</button>
+          <button class="detect-btn" onclick="captureAndDetectGuitar()">Capture & Detect Guitar</button>
           <div id="guitar-result" class="result-box" style="display: none;">
             <div class="guitar-type-display">
               <div class="guitar-icon">🎸</div>
               <div class="guitar-type-name" id="guitar-type-name"></div>
+              <div class="guitar-brand" id="guitar-brand" style="font-size: 18px; color: #94a3b8; margin-top: 10px;"></div>
               <div class="result-confidence" id="guitar-confidence"></div>
             </div>
           </div>
@@ -526,17 +527,21 @@ button.detect-btn:hover {
       display.textContent = `Current Style: ${styleName}`;
     }
 
-    // Guitar detection
-    async function getGuitar() {
+    // Capture current frame and detect guitar
+    async function captureAndDetectGuitar() {
       const resultBox = document.getElementById('guitar-result');
       const guitarName = document.getElementById('guitar-type-name');
+      const guitarBrand = document.getElementById('guitar-brand');
       const guitarConf = document.getElementById('guitar-confidence');
       
       resultBox.style.display = 'flex';
-      guitarName.textContent = 'Detecting...';
+      guitarName.textContent = 'Capturing...';
+      guitarBrand.textContent = '';
       guitarConf.textContent = '';
       
       try {
+        // The video feed is an img tag with a streaming source
+        // We'll use the GET endpoint which captures the latest frame from the camera
         const r = await fetch('/guitar');
         
         // Check if response is ok
@@ -547,16 +552,19 @@ button.detect-btn:hover {
         
         const d = await r.json();
         
-        // Check if there's an error in the response
+        // Display results
         if (d.error) {
           guitarName.textContent = d.class_name || 'Error';
+          guitarBrand.textContent = '';
           guitarConf.textContent = d.error;
         } else {
-          guitarName.textContent = d.class_name || `Class ${d.class}`;
+          guitarName.textContent = d.type || d.class_name || `Class ${d.class}`;
+          guitarBrand.textContent = `Brand: ${d.brand || 'Unknown'}`;
           guitarConf.textContent = `Confidence: ${(d.confidence * 100).toFixed(2)}%`;
         }
       } catch (error) {
         guitarName.textContent = 'Error';
+        guitarBrand.textContent = '';
         guitarConf.textContent = error.message || 'Failed to detect guitar';
         console.error('Guitar detection error:', error);
       }

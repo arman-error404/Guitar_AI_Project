@@ -1,4 +1,5 @@
 fastapi==0.128.0
+python-multipart==0.0.20
 numpy==2.4.1
 opencv_python==4.13.0.90
 sounddevice==0.5.5

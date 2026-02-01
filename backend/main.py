@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse, HTMLResponse
@@ -13,9 +13,14 @@ import threading
 import time
 import joblib
 import json
+from datetime import datetime
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+# Create directory for saved guitar images
+GUITAR_IMAGES_DIR = "saved_guitars"
+os.makedirs(GUITAR_IMAGES_DIR, exist_ok=True)
 
 @app.get("/")
 def home():
@@ -24,41 +29,68 @@ def home():
 # Load models
 # Try to load guitar model - handle weights-only file
 guitar_model = None
+guitar_class_names = None
+
+# First, try to load class names from notebook (class_names.npy)
 try:
-    guitar_model = tf.keras.models.load_model("models/model.weights.h5")
-    print("Guitar model loaded successfully")
-except (ValueError, OSError, Exception) as e:
-    print(f"Error loading guitar model directly: {e}")
-    if "No model config" in str(e) or "SavedModel" in str(e):
-        # Try to load from config.json and weights
-        config_path = "models/config.json"
-        weights_path = "models/model.weights.h5"
-        
-        if os.path.exists(config_path) and os.path.exists(weights_path):
-            try:
-                print("Loading guitar model from config.json and weights...")
-                with open(config_path, 'r') as f:
-                    model_config = json.load(f)
-                
-                # Reconstruct model from config
-                import keras
-                guitar_model = keras.saving.deserialize_keras_object(model_config)
-                
-                # Load weights
-                guitar_model.load_weights(weights_path)
-                print("Guitar model loaded successfully from config and weights")
-            except Exception as e2:
-                print(f"Error loading from config: {e2}")
-                guitar_model = None
-        else:
-            print(f"Config or weights file not found. Config: {os.path.exists(config_path)}, Weights: {os.path.exists(weights_path)}")
-            guitar_model = None
+    class_names_path = "models/class_names.npy"
+    if os.path.exists(class_names_path):
+        guitar_class_names = np.load(class_names_path).tolist()
+        print(f"Loaded guitar class names from notebook: {guitar_class_names}")
     else:
-        print(f"Unexpected error loading guitar model: {e}")
-        guitar_model = None
+        # Fallback to guitar_labels.py
+        from utils.guitar_labels import GUITAR_CLASSES
+        guitar_class_names = GUITAR_CLASSES
+        print(f"Using guitar class names from utils: {guitar_class_names}")
+except Exception as e:
+    print(f"Error loading class names: {e}")
+    from utils.guitar_labels import GUITAR_CLASSES
+    guitar_class_names = GUITAR_CLASSES
+
+# Try multiple model paths
+model_paths = [
+    "models/best_guitar_body_style_model.keras",  # From notebook
+    "models/guitar_model.h5",  # Alternative path
+    "models/model.weights.h5"  # Current path
+]
+
+for model_path in model_paths:
+    if os.path.exists(model_path):
+        try:
+            guitar_model = tf.keras.models.load_model(model_path, compile=False)
+            print(f"Guitar model loaded successfully from: {model_path}")
+            break
+        except Exception as e:
+            print(f"Error loading model from {model_path}: {e}")
+            continue
+
+# If still not loaded, try config.json approach
+if guitar_model is None:
+    config_path = "models/config.json"
+    weights_path = "models/model.weights.h5"
+    
+    if os.path.exists(config_path) and os.path.exists(weights_path):
+        try:
+            print("Loading guitar model from config.json and weights...")
+            with open(config_path, 'r') as f:
+                model_config = json.load(f)
+            
+            # Reconstruct model from config
+            import keras
+            guitar_model = keras.saving.deserialize_keras_object(model_config)
+            
+            # Load weights
+            guitar_model.load_weights(weights_path)
+            print("Guitar model loaded successfully from config and weights")
+        except Exception as e2:
+            print(f"Error loading from config: {e2}")
+            guitar_model = None
 
 if guitar_model is None:
     print("WARNING: Guitar model not loaded. Guitar detection will not work.")
+else:
+    print(f"Guitar model input shape: {guitar_model.input_shape}")
+    print(f"Guitar model output shape: {guitar_model.output_shape}")
 
 chord_model = None
 try:
@@ -70,8 +102,7 @@ except Exception as e:
 
 # Load chord labels
 from utils.chord_labels import CHORDS
-# Load guitar labels
-from utils.guitar_labels import GUITAR_CLASSES
+# Guitar class names are loaded above
 
 # Load style transfer
 from utils.style_transfer import StyleTransferProcessor, AVAILABLE_STYLES
@@ -159,6 +190,110 @@ def video_feed():
     )
 
 
+@app.post("/guitar/detect")
+async def guitar_detect_from_image(file: UploadFile = File(...)):
+    """Detect guitar type from uploaded image"""
+    try:
+        # Check if model is loaded
+        if guitar_model is None:
+            return {
+                "error": "Guitar model not loaded",
+                "class": -1,
+                "class_name": "Model Not Available",
+                "type": "Unknown",
+                "brand": "Unknown",
+                "confidence": 0.0
+            }
+        
+        # Read image file
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            return {
+                "error": "Failed to decode image",
+                "class": -1,
+                "class_name": "Invalid Image",
+                "type": "Unknown",
+                "brand": "Unknown",
+                "confidence": 0.0
+            }
+
+        # Preprocess image - use 224x224 to match notebook model
+        img = cv2.resize(frame, (224, 224))
+        # Convert BGR to RGB (model expects RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Normalize to [0, 1]
+        img = img.astype(np.float32) / 255.0
+        img = np.expand_dims(img, 0)
+
+        # Predict
+        pred = guitar_model.predict(img, verbose=0)
+        class_idx = int(np.argmax(pred[0]))
+        confidence = float(np.max(pred[0]))
+        
+        # Get guitar type name from loaded class names
+        if guitar_class_names and class_idx < len(guitar_class_names):
+            class_name = guitar_class_names[class_idx]
+        else:
+            class_name = f"Unknown (index {class_idx})"
+        
+        # Parse class name to extract type and brand
+        type_name = class_name
+        brand_name = "Unknown"
+        
+        # Map class names to more readable types and brands
+        type_mapping = {
+            "electric_solid": {"type": "Electric Solid Body", "brand": "Various"},
+            "electric_offset": {"type": "Electric Offset", "brand": "Fender"},
+            "electric_hollow": {"type": "Electric Hollow Body", "brand": "Gibson"},
+            "acoustic": {"type": "Acoustic", "brand": "Various"},
+            "classical": {"type": "Classical", "brand": "Various"}
+        }
+        
+        # Try to find mapping
+        class_name_lower = class_name.lower()
+        if class_name_lower in type_mapping:
+            type_name = type_mapping[class_name_lower]["type"]
+            brand_name = type_mapping[class_name_lower]["brand"]
+        else:
+            # Format the class name nicely
+            type_name = class_name.replace("_", " ").title()
+
+        # Save the captured image
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"guitar_{class_name}_{confidence:.2f}_{timestamp}.jpg"
+            filepath = os.path.join(GUITAR_IMAGES_DIR, filename)
+            cv2.imwrite(filepath, frame)
+            print(f"✅ Saved guitar image: {filepath}")
+        except Exception as save_error:
+            print(f"⚠️ Failed to save guitar image: {save_error}")
+
+        return {
+            "class": class_idx,
+            "class_name": class_name,
+            "type": type_name,
+            "brand": brand_name,
+            "confidence": confidence,
+            "image_saved": True,
+            "image_path": filepath if 'filepath' in locals() else None
+        }
+    except Exception as e:
+        print(f"Error in guitar detection from image: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "error": str(e),
+            "class": -1,
+            "class_name": "Error",
+            "type": "Unknown",
+            "brand": "Unknown",
+            "confidence": 0.0
+        }
+
+
 @app.get("/guitar")
 def guitar_type():
     try:
@@ -168,6 +303,8 @@ def guitar_type():
                 "error": "Guitar model not loaded",
                 "class": -1,
                 "class_name": "Model Not Available",
+                "type": "Unknown",
+                "brand": "Unknown",
                 "confidence": 0.0
             }
         
@@ -178,30 +315,73 @@ def guitar_type():
                     "error": "Camera frame not available",
                     "class": -1,
                     "class_name": "No Frame",
+                    "type": "Unknown",
+                    "brand": "Unknown",
                     "confidence": 0.0
                 }
             frame = latest_frame.copy()
 
-        # Preprocess image
-        img = cv2.resize(frame, (256, 256))
-        img = img / 255.0
+        # Preprocess image - use 224x224 to match notebook model
+        img = cv2.resize(frame, (224, 224))
+        # Convert BGR to RGB (model expects RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Normalize to [0, 1]
+        img = img.astype(np.float32) / 255.0
         img = np.expand_dims(img, 0)
 
         # Predict
         pred = guitar_model.predict(img, verbose=0)
-        class_idx = int(np.argmax(pred))
-        confidence = float(np.max(pred))
+        class_idx = int(np.argmax(pred[0]))
+        confidence = float(np.max(pred[0]))
         
-        # Return guitar type name
-        if class_idx < len(GUITAR_CLASSES):
-            guitar_type_name = GUITAR_CLASSES[class_idx]
+        # Get guitar type name from loaded class names
+        if guitar_class_names and class_idx < len(guitar_class_names):
+            class_name = guitar_class_names[class_idx]
         else:
-            guitar_type_name = f"Unknown (index {class_idx})"
+            class_name = f"Unknown (index {class_idx})"
+        
+        # Parse class name to extract type and brand
+        # Class names are like: "electric_solid", "acoustic", "classical", etc.
+        type_name = class_name
+        brand_name = "Unknown"
+        
+        # Map class names to more readable types and brands
+        type_mapping = {
+            "electric_solid": {"type": "Electric Solid Body", "brand": "Various"},
+            "electric_offset": {"type": "Electric Offset", "brand": "Fender"},
+            "electric_hollow": {"type": "Electric Hollow Body", "brand": "Gibson"},
+            "acoustic": {"type": "Acoustic", "brand": "Various"},
+            "classical": {"type": "Classical", "brand": "Various"}
+        }
+        
+        # Try to find mapping
+        class_name_lower = class_name.lower()
+        if class_name_lower in type_mapping:
+            type_name = type_mapping[class_name_lower]["type"]
+            brand_name = type_mapping[class_name_lower]["brand"]
+        else:
+            # Format the class name nicely
+            type_name = class_name.replace("_", " ").title()
+
+        # Save the captured image
+        filepath = None
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"guitar_{class_name}_{confidence:.2f}_{timestamp}.jpg"
+            filepath = os.path.join(GUITAR_IMAGES_DIR, filename)
+            cv2.imwrite(filepath, frame)
+            print(f"✅ Saved guitar image: {filepath}")
+        except Exception as save_error:
+            print(f"⚠️ Failed to save guitar image: {save_error}")
 
         return {
             "class": class_idx,
-            "class_name": guitar_type_name,
-            "confidence": confidence
+            "class_name": class_name,
+            "type": type_name,
+            "brand": brand_name,
+            "confidence": confidence,
+            "image_saved": filepath is not None,
+            "image_path": filepath
         }
     except Exception as e:
         print(f"Error in guitar detection: {e}")
@@ -211,6 +391,8 @@ def guitar_type():
             "error": str(e),
             "class": -1,
             "class_name": "Error",
+            "type": "Unknown",
+            "brand": "Unknown",
             "confidence": 0.0
         }
 
@@ -267,9 +449,18 @@ def chord():
         
         # Apply GAN-based audio enhancement if available
         # GAN preserves dB scale, so output is still in dB (raw values)
+        # The GAN normalizes internally but denormalizes back to original dB scale
         try:
             enhanced_spec = audio_enhancer.enhance_spectrogram(spec, spec_type="cqt")
-            spec = enhanced_spec
+            # Validate that enhanced spec has same shape and reasonable dB range
+            if enhanced_spec is not None and enhanced_spec.shape == spec.shape:
+                # Check if values are in reasonable dB range (typically -80 to 0 dB)
+                if enhanced_spec.min() > -100 and enhanced_spec.max() < 10:
+                    spec = enhanced_spec
+                else:
+                    print(f"Warning: GAN output has unusual dB range [{enhanced_spec.min():.2f}, {enhanced_spec.max():.2f}], using original")
+            else:
+                print(f"Warning: GAN output shape mismatch or None, using original spectrogram")
         except Exception as e:
             print(f"Audio enhancement error: {e}, using original spectrogram")
         
