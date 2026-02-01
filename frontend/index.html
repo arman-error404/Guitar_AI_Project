@@ -1,71 +1,798 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>Guitar AI</title>
+<title>Guitar AI Studio</title>
 <style>
-body{
- background:#0f172a;
- color:white;
- font-family:sans-serif;
- text-align:center;
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
-.card{
- background:#020617;
- padding:20px;
- margin:20px;
- border-radius:12px;
+
+body {
+  background: #0f172a;
+  color: white;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
 }
-button{
- padding:10px 20px;
- background:#22c55e;
- border:none;
- border-radius:8px;
+
+/* Main layout: camera on left, tabs on right */
+.main-container {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  flex-direction: column;
+}
+
+/* Navbar */
+.navbar {
+  width: 100%;
+  height: 60px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  position: relative;
+}
+
+.navbar h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #ffffff 0%, #e0e7ff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Content wrapper */
+.content-wrapper {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: calc(100vh - 60px);
+  overflow: hidden;
+}
+
+/* Camera section - full screen left */
+.camera-section {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  position: relative;
+  overflow: hidden;
+}
+
+.video-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-container img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Right sidebar with tabs */
+.sidebar {
+  width: 400px;
+  background: #1e293b;
+  border-left: 2px solid #334155;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Tab buttons */
+.tab-header {
+  display: flex;
+  background: #0f172a;
+  border-bottom: 2px solid #334155;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 15px 20px;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-bottom: 3px solid transparent;
+  font-size: 14px;
+}
+
+.tab-btn:hover {
+  background: #1e293b;
+  color: white;
+}
+
+.tab-btn.active {
+  color: #60a5fa;
+  border-bottom-color: #60a5fa;
+  background: #1e293b;
+}
+
+/* Tab content */
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* Scrollbar styling */
+.tab-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.tab-content::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+.tab-content::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+.tab-content::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Card styling */
+.card {
+  background: #020617;
+  padding: 20px;
+  margin-bottom: 15px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.card h3 {
+  margin-bottom: 15px;
+  color: #e2e8f0;
+  font-size: 18px;
+}
+
+/* Buttons */
+button {
+  padding: 12px 24px;
+  background: #22c55e;
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 14px;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+button:hover {
+  background: #16a34a;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(34, 197, 94, 0.3);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+button.detect-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 15px;
+  font-size: 16px;
+}
+
+button.detect-btn:hover {
+  background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+}
+
+/* Detection results */
+.result-box {
+  background: rgba(102, 126, 234, 0.1);
+  padding: 15px;
+  border-radius: 8px;
+  margin-top: 15px;
+  min-height: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.result-label {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-bottom: 5px;
+}
+
+.result-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #60a5fa;
+}
+
+.result-confidence {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-top: 5px;
+}
+
+/* Chord display */
+.chord-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.chord-name-box {
+  background: rgba(102, 126, 234, 0.2);
+  padding: 15px 30px;
+  border-radius: 12px;
+  border: 2px solid #667eea;
+}
+
+.chord-name {
+  font-size: 32px;
+  font-weight: 700;
+  color: #60a5fa;
+  text-align: center;
+}
+
+.chord-diagrams {
+  display: flex;
+  gap: 30px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.chord-diagram-container {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.staff-container {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Style transfer */
+.style-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.style-btn {
+  padding: 12px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.style-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 12px rgba(102, 126, 234, 0.4);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.style-btn.active {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  border-color: #f5576c;
+  box-shadow: 0 0 20px rgba(245, 87, 108, 0.5);
+}
+
+.current-style {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(102, 126, 234, 0.2);
+  border-radius: 8px;
+  font-size: 14px;
+  text-align: center;
+}
+
+/* Loading state */
+.loading {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: white;
+  animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Guitar type display */
+.guitar-type-display {
+  text-align: center;
+  padding: 20px;
+}
+
+.guitar-icon {
+  font-size: 48px;
+  margin-bottom: 15px;
+}
+
+.guitar-type-name {
+  font-size: 28px;
+  font-weight: 700;
+  color: #60a5fa;
+  margin-bottom: 10px;
+  text-transform: capitalize;
+}
+
+.guitar-type-name::before {
+  content: "🎸 ";
 }
 </style>
 </head>
 
 <body>
+  <div class="main-container">
+    <!-- Navbar -->
+    <nav class="navbar">
+      <h1>🎸 Guitar AI Studio</h1>
+    </nav>
 
-<h1>🎸 Guitar AI Studio</h1>
+    <!-- Content wrapper -->
+    <div class="content-wrapper">
+      <!-- Camera section - full screen left -->
+      <div class="camera-section">
+        <div class="video-container">
+          <img src="/video" id="videoFeed" alt="Camera Feed"/>
+        </div>
+      </div>
 
-<img src="/video" width="640"/>
+    <!-- Right sidebar with tabs -->
+    <div class="sidebar">
+      <!-- Tab buttons -->
+      <div class="tab-header">
+        <button class="tab-btn active" onclick="switchTab('guitar')">Guitar</button>
+        <button class="tab-btn" onclick="switchTab('chord')">Chord</button>
+        <button class="tab-btn" onclick="switchTab('style')">Style</button>
+      </div>
 
-<div class="card">
-<h3>Style</h3>
-<button onclick="setStyle('starry')">Starry</button>
-<button onclick="setStyle('muse')">Muse</button>
-<button onclick="setStyle('vii')">Vii</button>
-<button onclick="setStyle('off')">Off</button>
-</div>
+      <!-- Guitar Tab -->
+      <div id="guitar-tab" class="tab-content active">
+        <div class="card">
+          <h3>🎸 Guitar Type Detection</h3>
+          <button class="detect-btn" onclick="getGuitar()">Detect Guitar Type</button>
+          <div id="guitar-result" class="result-box" style="display: none;">
+            <div class="guitar-type-display">
+              <div class="guitar-icon">🎸</div>
+              <div class="guitar-type-name" id="guitar-type-name"></div>
+              <div class="result-confidence" id="guitar-confidence"></div>
+            </div>
+          </div>
+        </div>
+      </div>
 
-<div class="card">
-<h3>AI Detection</h3>
-<button onclick="getGuitar()">Guitar</button>
-<button onclick="getChord()">Chord</button>
+      <!-- Chord Tab -->
+      <div id="chord-tab" class="tab-content">
+        <div class="card">
+          <h3>🎵 Chord Detection</h3>
+          <button class="detect-btn" onclick="getChord()">Detect Chord</button>
+          <div id="chord-result" class="result-box" style="display: none;">
+            <div class="result-label">Detected Chord</div>
+            <div class="result-value" id="chord-name"></div>
+            <div class="result-confidence" id="chord-confidence"></div>
+          </div>
+        </div>
+        <div id="chord-display" class="chord-display" style="display: none;">
+          <div class="chord-name-box">
+            <div class="chord-name" id="chord-display-name"></div>
+          </div>
+          <div class="chord-diagrams">
+            <div class="chord-diagram-container">
+              <svg id="chord-diagram" width="200" height="250"></svg>
+            </div>
+            <div class="staff-container">
+              <svg id="staff-notation" width="300" height="200"></svg>
+            </div>
+          </div>
+        </div>
+      </div>
 
-<p id="out"></p>
-</div>
+      <!-- Style Tab -->
+      <div id="style-tab" class="tab-content">
+        <div class="card">
+          <h3>🎨 Virtual Custom Shop</h3>
+          <div class="current-style" id="currentStyle">Current Style: Original</div>
+          <div class="style-grid" id="styleGrid"></div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
 
-<script>
-async function setStyle(s){
- await fetch('/style/'+s,{method:'POST'});
-}
+  <script>
+    let currentStyle = 'none';
+    let styles = {};
+    let currentTab = 'guitar';
 
-async function getGuitar(){
- let r = await fetch('/guitar');
- let d = await r.json();
- document.getElementById('out').innerText =
-   "Guitar: "+d.class+" ("+d.confidence.toFixed(2)+")";
-}
+    // Tab switching
+    function switchTab(tabName) {
+      currentTab = tabName;
+      
+      // Update tab buttons
+      document.querySelectorAll('.tab-btn').forEach((btn, index) => {
+        btn.classList.remove('active');
+        const tabNames = ['guitar', 'chord', 'style'];
+        if (tabNames[index] === tabName) {
+          btn.classList.add('active');
+        }
+      });
+      
+      // Update tab content
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+      });
+      document.getElementById(tabName + '-tab').classList.add('active');
+    }
 
-async function getChord(){
- let r = await fetch('/chord');
- let d = await r.json();
- document.getElementById('out').innerText =
-   "Chord: "+d.class+" ("+d.confidence.toFixed(2)+")";
-}
-</script>
+    // Load available styles
+    async function loadStyles() {
+      try {
+        const response = await fetch('/styles');
+        const data = await response.json();
+        styles = data.styles;
+        currentStyle = data.current || 'none';
+        renderStyleButtons();
+        updateCurrentStyleDisplay();
+      } catch (error) {
+        console.error('Error loading styles:', error);
+      }
+    }
 
+    // Render style buttons
+    function renderStyleButtons() {
+      const grid = document.getElementById('styleGrid');
+      grid.innerHTML = '';
+      
+      for (const [key, displayName] of Object.entries(styles)) {
+        const btn = document.createElement('button');
+        btn.className = 'style-btn' + (key === currentStyle ? ' active' : '');
+        btn.textContent = displayName;
+        btn.onclick = () => setStyle(key);
+        grid.appendChild(btn);
+      }
+    }
 
+    // Set style
+    async function setStyle(styleName) {
+      try {
+        const response = await fetch(`/style/${styleName}`, { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+          currentStyle = styleName;
+          renderStyleButtons();
+          updateCurrentStyleDisplay();
+          
+          // Force video refresh
+          const videoFeed = document.getElementById('videoFeed');
+          const src = videoFeed.src;
+          videoFeed.src = '';
+          setTimeout(() => {
+            videoFeed.src = src + '?t=' + Date.now();
+          }, 100);
+        } else {
+          console.error('Failed to set style:', data.error);
+        }
+      } catch (error) {
+        console.error('Error setting style:', error);
+      }
+    }
+
+    // Update current style display
+    function updateCurrentStyleDisplay() {
+      const display = document.getElementById('currentStyle');
+      const styleName = styles[currentStyle] || 'Original';
+      display.textContent = `Current Style: ${styleName}`;
+    }
+
+    // Guitar detection
+    async function getGuitar() {
+      const resultBox = document.getElementById('guitar-result');
+      const guitarName = document.getElementById('guitar-type-name');
+      const guitarConf = document.getElementById('guitar-confidence');
+      
+      resultBox.style.display = 'flex';
+      guitarName.textContent = 'Detecting...';
+      guitarConf.textContent = '';
+      
+      try {
+        const r = await fetch('/guitar');
+        
+        // Check if response is ok
+        if (!r.ok) {
+          const errorText = await r.text();
+          throw new Error(`Server error: ${r.status} - ${errorText}`);
+        }
+        
+        const d = await r.json();
+        
+        // Check if there's an error in the response
+        if (d.error) {
+          guitarName.textContent = d.class_name || 'Error';
+          guitarConf.textContent = d.error;
+        } else {
+          guitarName.textContent = d.class_name || `Class ${d.class}`;
+          guitarConf.textContent = `Confidence: ${(d.confidence * 100).toFixed(2)}%`;
+        }
+      } catch (error) {
+        guitarName.textContent = 'Error';
+        guitarConf.textContent = error.message || 'Failed to detect guitar';
+        console.error('Guitar detection error:', error);
+      }
+    }
+
+    // Chord detection
+    async function getChord() {
+      const resultBox = document.getElementById('chord-result');
+      const chordName = document.getElementById('chord-name');
+      const chordConf = document.getElementById('chord-confidence');
+      const chordDisplay = document.getElementById('chord-display');
+      
+      resultBox.style.display = 'flex';
+      chordName.textContent = 'Listening...';
+      chordConf.textContent = '';
+      chordDisplay.style.display = 'none';
+      
+      try {
+        const r = await fetch('/chord');
+        const d = await r.json();
+        
+        chordName.textContent = d.class;
+        chordConf.textContent = `Confidence: ${(d.confidence * 100).toFixed(2)}%`;
+        
+        // Show chord diagram
+        await displayChord(d.class);
+        chordDisplay.style.display = 'flex';
+      } catch (error) {
+        chordName.textContent = 'Error';
+        chordConf.textContent = error.message;
+        console.error('Chord detection error:', error);
+      }
+    }
+
+    // Display chord diagram and staff
+    async function displayChord(chordName) {
+      try {
+        // Fetch chord diagram data
+        const response = await fetch(`/chord/diagram/${encodeURIComponent(chordName)}`);
+        const chordData = await response.json();
+        
+        // Update chord name display
+        document.getElementById('chord-display-name').textContent = chordData.name;
+        
+        // Draw chord diagram
+        drawChordDiagram(chordData.fingering);
+        
+        // Draw staff notation
+        drawStaffNotation(chordData.notes);
+      } catch (error) {
+        console.error('Error loading chord diagram:', error);
+        // Draw default chord diagram
+        drawChordDiagram(null);
+        drawStaffNotation(['C', 'E', 'G']);
+      }
+    }
+
+    // Draw chord diagram
+    function drawChordDiagram(fingering) {
+      const svg = document.getElementById('chord-diagram');
+      svg.innerHTML = '';
+      
+      const width = 200;
+      const height = 250;
+      const stringSpacing = 30;
+      const fretSpacing = 40;
+      const startX = 40;
+      const startY = 30;
+      const numStrings = 6;
+      const numFrets = 5;
+      
+      // Draw strings (vertical lines)
+      for (let i = 0; i < numStrings; i++) {
+        const x = startX + i * stringSpacing;
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x);
+        line.setAttribute('y1', startY);
+        line.setAttribute('x2', x);
+        line.setAttribute('y2', startY + numFrets * fretSpacing);
+        line.setAttribute('stroke', '#000');
+        line.setAttribute('stroke-width', '2');
+        svg.appendChild(line);
+      }
+      
+      // Draw frets (horizontal lines)
+      for (let i = 0; i <= numFrets; i++) {
+        const y = startY + i * fretSpacing;
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', startX);
+        line.setAttribute('y1', y);
+        line.setAttribute('x2', startX + (numStrings - 1) * stringSpacing);
+        line.setAttribute('y2', y);
+        line.setAttribute('stroke', '#000');
+        line.setAttribute('stroke-width', i === 0 ? '4' : '2');
+        svg.appendChild(line);
+      }
+      
+      // Draw finger positions
+      if (fingering && fingering.frets) {
+        for (let i = 0; i < numStrings; i++) {
+          const fret = fingering.frets[i];
+          const x = startX + i * stringSpacing;
+          
+          if (fret === 0) {
+            // Open string - draw 'O' above nut
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', x);
+            circle.setAttribute('cy', startY - 15);
+            circle.setAttribute('r', '8');
+            circle.setAttribute('fill', 'none');
+            circle.setAttribute('stroke', '#000');
+            circle.setAttribute('stroke-width', '2');
+            svg.appendChild(circle);
+          } else if (fret > 0) {
+            // Fingered note - draw dot
+            const y = startY + (fret - 0.5) * fretSpacing;
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', x);
+            circle.setAttribute('cy', y);
+            circle.setAttribute('r', '10');
+            circle.setAttribute('fill', '#000');
+            svg.appendChild(circle);
+          } else {
+            // Muted string - draw 'X' above nut
+            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x', x);
+            text.setAttribute('y', startY - 10);
+            text.setAttribute('font-size', '16');
+            text.setAttribute('font-weight', 'bold');
+            text.setAttribute('text-anchor', 'middle');
+            text.setAttribute('fill', '#000');
+            text.textContent = 'X';
+            svg.appendChild(text);
+          }
+        }
+      }
+    }
+
+    // Draw staff notation
+    function drawStaffNotation(notes) {
+      const svg = document.getElementById('staff-notation');
+      svg.innerHTML = '';
+      
+      const width = 300;
+      const height = 200;
+      const staffTop = 40;
+      const staffHeight = 80;
+      const lineSpacing = staffHeight / 4;
+      const noteRadius = 8;
+      
+      // Draw treble clef (simplified)
+      const clef = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      clef.setAttribute('x', '20');
+      clef.setAttribute('y', staffTop + staffHeight / 2 + 5);
+      clef.setAttribute('font-size', '40');
+      clef.setAttribute('font-family', 'serif');
+      clef.setAttribute('fill', '#000');
+      clef.textContent = '♩';
+      svg.appendChild(clef);
+      
+      // Draw staff lines
+      for (let i = 0; i < 5; i++) {
+        const y = staffTop + i * lineSpacing;
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', '60');
+        line.setAttribute('y1', y);
+        line.setAttribute('x2', width - 20);
+        line.setAttribute('y2', y);
+        line.setAttribute('stroke', '#000');
+        line.setAttribute('stroke-width', '2');
+        svg.appendChild(line);
+      }
+      
+      // Note positions on staff (simplified mapping)
+      const notePositions = {
+        'C': staffTop + 4 * lineSpacing + 10, // Below staff
+        'D': staffTop + 4 * lineSpacing,
+        'E': staffTop + 3 * lineSpacing + 5,
+        'F': staffTop + 3 * lineSpacing,
+        'G': staffTop + 2 * lineSpacing + 5,
+        'A': staffTop + 2 * lineSpacing,
+        'B': staffTop + 1 * lineSpacing + 5,
+        'C#': staffTop + 3 * lineSpacing + 5,
+        'D#': staffTop + 2 * lineSpacing + 5,
+        'F#': staffTop + 2 * lineSpacing + 5,
+        'G#': staffTop + 1 * lineSpacing + 5,
+      };
+      
+      // Draw notes
+      const startX = 100;
+      const noteSpacing = 40;
+      notes.forEach((note, index) => {
+        const baseNote = note.replace('#', '');
+        let y = notePositions[note] || notePositions[baseNote] || staffTop + 2 * lineSpacing;
+        
+        // Draw note head
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', startX + index * noteSpacing);
+        circle.setAttribute('cy', y);
+        circle.setAttribute('r', noteRadius);
+        circle.setAttribute('fill', '#000');
+        svg.appendChild(circle);
+        
+        // Draw ledger lines if needed
+        if (y > staffTop + 4 * lineSpacing || y < staffTop) {
+          const ledgerLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          ledgerLine.setAttribute('x1', startX + index * noteSpacing - noteRadius - 2);
+          ledgerLine.setAttribute('y1', y);
+          ledgerLine.setAttribute('x2', startX + index * noteSpacing + noteRadius + 2);
+          ledgerLine.setAttribute('y2', y);
+          ledgerLine.setAttribute('stroke', '#000');
+          ledgerLine.setAttribute('stroke-width', '2');
+          svg.insertBefore(ledgerLine, circle);
+        }
+      });
+    }
+
+    // Initialize on load
+    window.addEventListener('load', () => {
+      loadStyles();
+      
+      // Refresh current style every 5 seconds
+      setInterval(async () => {
+        try {
+          const response = await fetch('/style/current');
+          const data = await response.json();
+          if (data.style !== currentStyle) {
+            currentStyle = data.style;
+            renderStyleButtons();
+            updateCurrentStyleDisplay();
+          }
+        } catch (error) {
+          console.error('Error checking current style:', error);
+        }
+      }, 5000);
+    });
+  </script>
 </body>
 </html>

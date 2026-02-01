@@ -4,3 +4,7 @@ __pycache__/
 .env
 .DS_Store
 .ipynb_checkpoints/
+models/chord_model.ipynb
+*.wav
+*.npy
+*.md

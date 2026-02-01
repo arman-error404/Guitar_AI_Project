@@ -1,33 +1,103 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse, HTMLResponse
 import cv2
 import numpy as np
-from vision.style_engine import StyleEngine
 import tensorflow as tf
 import sounddevice as sd
 import threading
 import time
+import joblib
+import json
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+@app.get("/")
+def home():
+    return FileResponse("frontend/index.html")
 
 # Load models
-guitar_model = tf.keras.models.load_model("models/guitar_model.h5")
-chord_model = tf.keras.models.load_model("models/chord_model.h5")
+# Try to load guitar model - handle weights-only file
+guitar_model = None
+try:
+    guitar_model = tf.keras.models.load_model("models/model.weights.h5")
+    print("Guitar model loaded successfully")
+except (ValueError, OSError, Exception) as e:
+    print(f"Error loading guitar model directly: {e}")
+    if "No model config" in str(e) or "SavedModel" in str(e):
+        # Try to load from config.json and weights
+        config_path = "models/config.json"
+        weights_path = "models/model.weights.h5"
+        
+        if os.path.exists(config_path) and os.path.exists(weights_path):
+            try:
+                print("Loading guitar model from config.json and weights...")
+                with open(config_path, 'r') as f:
+                    model_config = json.load(f)
+                
+                # Reconstruct model from config
+                import keras
+                guitar_model = keras.saving.deserialize_keras_object(model_config)
+                
+                # Load weights
+                guitar_model.load_weights(weights_path)
+                print("Guitar model loaded successfully from config and weights")
+            except Exception as e2:
+                print(f"Error loading from config: {e2}")
+                guitar_model = None
+        else:
+            print(f"Config or weights file not found. Config: {os.path.exists(config_path)}, Weights: {os.path.exists(weights_path)}")
+            guitar_model = None
+    else:
+        print(f"Unexpected error loading guitar model: {e}")
+        guitar_model = None
 
-# Style models
-styles = {
-    "starry": StyleEngine("models/style/starry-night.model"),
-    "muse": StyleEngine("models/style/la_muse.model"),
-    "vii": StyleEngine("models/style/composition_vii.model")
-}
+if guitar_model is None:
+    print("WARNING: Guitar model not loaded. Guitar detection will not work.")
 
-current_style = None
+chord_model = None
+try:
+    chord_model = tf.keras.models.load_model("models/chord_model.h5")
+    print("Chord model loaded successfully")
+except Exception as e:
+    print(f"Error loading chord model: {e}")
+    chord_model = None
+
+# Load chord labels
+from utils.chord_labels import CHORDS
+# Load guitar labels
+from utils.guitar_labels import GUITAR_CLASSES
+
+# Load style transfer
+from utils.style_transfer import StyleTransferProcessor, AVAILABLE_STYLES
+
+# Load audio enhancement
+from utils.audio_gan import AudioEnhancementProcessor
+
+# Initialize style transfer processor
+# Set use_gan=True to enable GAN-based style transfer (requires trained models)
+# Set use_gan=False to use filter-based approach (works immediately, no training needed)
+USE_GAN = os.getenv("USE_GAN_STYLE_TRANSFER", "false").lower() == "true"
+style_processor = StyleTransferProcessor(use_gan=USE_GAN)
+current_style = "none"  # Default: no style
+
+# Initialize audio enhancement processor
+# Set use_gan=True to enable GAN-based audio enhancement (requires trained models)
+# Set use_gan=False to use filter-based approach (works immediately, no training needed)
+USE_AUDIO_GAN = os.getenv("USE_AUDIO_GAN", "false").lower() == "true"
+audio_enhancer = AudioEnhancementProcessor(use_gan=USE_AUDIO_GAN)
 
 # Camera
 cap = cv2.VideoCapture(0)
 
 latest_frame = None
 lock = threading.Lock()
+style_lock = threading.Lock()
 
 SR = 44100
 DUR = 2
@@ -61,12 +131,19 @@ def generate_frames():
                 continue
 
             frame = latest_frame.copy()
+        
+        # Apply style transfer if enabled
+        with style_lock:
+            style = current_style
+        
+        if style != "none":
+            try:
+                frame = style_processor.apply_style(frame, style)
+            except Exception as e:
+                print(f"Style transfer error: {e}")
+                # Continue with original frame if style transfer fails
 
-        # Apply style if enabled
-        if current_style:
-            frame = styles[current_style].stylize(frame)
-
-        _, jpeg = cv2.imencode('.jpg', frame)
+        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' +
@@ -84,49 +161,273 @@ def video_feed():
 
 @app.get("/guitar")
 def guitar_type():
+    try:
+        # Check if model is loaded
+        if guitar_model is None:
+            return {
+                "error": "Guitar model not loaded",
+                "class": -1,
+                "class_name": "Model Not Available",
+                "confidence": 0.0
+            }
+        
+        # Check if frame is available
+        with lock:
+            if latest_frame is None:
+                return {
+                    "error": "Camera frame not available",
+                    "class": -1,
+                    "class_name": "No Frame",
+                    "confidence": 0.0
+                }
+            frame = latest_frame.copy()
 
-    with lock:
-        frame = latest_frame.copy()
+        # Preprocess image
+        img = cv2.resize(frame, (256, 256))
+        img = img / 255.0
+        img = np.expand_dims(img, 0)
 
-    img = cv2.resize(frame,(256,256))
-    img = img/255.0
-    img = np.expand_dims(img,0)
+        # Predict
+        pred = guitar_model.predict(img, verbose=0)
+        class_idx = int(np.argmax(pred))
+        confidence = float(np.max(pred))
+        
+        # Return guitar type name
+        if class_idx < len(GUITAR_CLASSES):
+            guitar_type_name = GUITAR_CLASSES[class_idx]
+        else:
+            guitar_type_name = f"Unknown (index {class_idx})"
 
-    pred = guitar_model.predict(img, verbose=0)
-
-    return {
-        "class": int(np.argmax(pred)),
-        "confidence": float(np.max(pred))
-    }
+        return {
+            "class": class_idx,
+            "class_name": guitar_type_name,
+            "confidence": confidence
+        }
+    except Exception as e:
+        print(f"Error in guitar detection: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "error": str(e),
+            "class": -1,
+            "class_name": "Error",
+            "confidence": 0.0
+        }
 
 
 @app.get("/chord")
 def chord():
+    try:
+        # Check if model is loaded
+        if chord_model is None:
+            return {
+                "error": "Chord model not loaded",
+                "class": "Model Not Available",
+                "confidence": 0.0
+            }
+        
+        import librosa
+        import soundfile as sf
 
-    audio = sd.rec(int(SR*DUR),
-                   samplerate=SR,
-                   channels=1,
-                   dtype='float32')
-    sd.wait()
+        # Use correct sample rate for chord model (matches training/test)
+        SAMPLE_RATE = 22050  # Match test_chord_model.py
+        DURATION = 2.0
+        
+        audio = sd.rec(int(SAMPLE_RATE * DURATION),
+                       samplerate=SAMPLE_RATE,
+                       channels=1,
+                       dtype='float32')
+        sd.wait()
+        audio = audio.flatten()
 
-    audio = audio.flatten()
-    audio = np.expand_dims(audio,0)
+        # Save audio to file for later use
+        sf.write('last_audio.wav', audio, SAMPLE_RATE)
 
-    pred = chord_model.predict(audio, verbose=0)
+        # Convert audio to spectrogram (match test_chord_model.py exactly)
+        BINS_PER_OCTAVE = 36
+        N_BINS = 7 * BINS_PER_OCTAVE  # 252
+        MAX_LEN = 256
+        
+        # Compute CQT spectrogram
+        cqt = np.abs(librosa.cqt(
+            y=audio,
+            sr=SAMPLE_RATE,
+            bins_per_octave=BINS_PER_OCTAVE,
+            n_bins=N_BINS
+        ))
+        
+        # Convert to dB scale (MATCH TRAINING: use ref=np.max)
+        spec = librosa.amplitude_to_db(cqt, ref=np.max)
+        
+        # Pad or truncate to expected size (NO RESIZING - preserves frequency structure)
+        if spec.shape[1] < MAX_LEN:
+            spec = np.pad(spec, ((0, 0), (0, MAX_LEN - spec.shape[1])))
+        else:
+            spec = spec[:, :MAX_LEN]
+        
+        # Apply GAN-based audio enhancement if available
+        # GAN preserves dB scale, so output is still in dB (raw values)
+        try:
+            enhanced_spec = audio_enhancer.enhance_spectrogram(spec, spec_type="cqt")
+            spec = enhanced_spec
+        except Exception as e:
+            print(f"Audio enhancement error: {e}, using original spectrogram")
+        
+        # IMPORTANT: Model expects RAW dB values (NOT normalized)
+        # DO NOT normalize - match test_chord_model.py line 98-100
+        # Just ensure shape is correct: (252, 256, 1)
+        spec_final = np.expand_dims(spec, axis=-1)  # (252, 256, 1)
+        spec_final = np.expand_dims(spec_final, axis=0)  # (1, 252, 256, 1)
 
+        pred = chord_model.predict(spec_final, verbose=0)
+        class_idx = int(np.argmax(pred))
+        
+        # Use CHORDS list directly instead of encoder
+        if class_idx < len(CHORDS):
+            chord_name = CHORDS[class_idx]
+        else:
+            chord_name = f"Unknown (index {class_idx})"
+
+        return {
+            "class": chord_name,
+            "confidence": float(np.max(pred))
+        }
+    except Exception as e:
+        print(f"Error in chord detection: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "error": str(e),
+            "class": "Error",
+            "confidence": 0.0
+        }
+
+
+@app.get("/styles")
+def get_styles():
+    """Get available style options"""
     return {
-        "class": int(np.argmax(pred)),
-        "confidence": float(np.max(pred))
+        "styles": AVAILABLE_STYLES,
+        "current": current_style
     }
 
-@app.post("/style/{name}")
-def set_style(name: str):
 
+@app.post("/style/{style_name}")
+def set_style(style_name: str):
+    """Set the current style for video feed"""
     global current_style
+    
+    if style_name not in AVAILABLE_STYLES:
+        return {
+            "error": f"Style '{style_name}' not found",
+            "available_styles": list(AVAILABLE_STYLES.keys())
+        }
+    
+    with style_lock:
+        current_style = style_name
+    
+    return {
+        "success": True,
+        "style": style_name,
+        "style_display_name": AVAILABLE_STYLES[style_name]
+    }
 
-    if name in styles:
-        current_style = name
-        return {"status":"on", "style":name}
 
-    current_style = None
-    return {"status":"off"}
+@app.get("/style/current")
+def get_current_style():
+    """Get the current active style"""
+    return {
+        "style": current_style,
+        "style_display_name": AVAILABLE_STYLES.get(current_style, "Unknown")
+    }
+
+
+@app.get("/chord/diagram/{chord_name}")
+def get_chord_diagram(chord_name: str):
+    """Get chord diagram data for a given chord name"""
+    # Parse chord name to extract base note and type
+    chord_name_clean = chord_name.strip()
+    
+    # Basic chord diagram data structure
+    # This is a simplified version - you can expand this with actual chord fingerings
+    chord_data = {
+        "name": chord_name_clean,
+        "fingering": get_chord_fingering(chord_name_clean),
+        "notes": get_chord_notes(chord_name_clean)
+    }
+    
+    return chord_data
+
+
+def get_chord_fingering(chord_name: str):
+    """Get finger positions for a chord (simplified - returns common fingerings)"""
+    # Common chord fingerings - this is a simplified mapping
+    # In a real app, you'd have a comprehensive database
+    common_chords = {
+        "F": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "F-major": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "F1": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "F2": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "F3": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "F4": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "F5": {"strings": [1, 3, 3, 2, 1, 1], "frets": [1, 3, 3, 2, 1, 1], "capo": 0},
+        "C": {"strings": [0, 1, 0, 2, 1, 0], "frets": [0, 1, 0, 2, 1, 0], "capo": 0},
+        "C-major": {"strings": [0, 1, 0, 2, 1, 0], "frets": [0, 1, 0, 2, 1, 0], "capo": 0},
+        "G": {"strings": [3, 0, 0, 0, 2, 3], "frets": [3, 0, 0, 0, 2, 3], "capo": 0},
+        "G-major": {"strings": [3, 0, 0, 0, 2, 3], "frets": [3, 0, 0, 0, 2, 3], "capo": 0},
+        "A": {"strings": [0, 0, 2, 2, 2, 0], "frets": [0, 0, 2, 2, 2, 0], "capo": 0},
+        "A-major": {"strings": [0, 0, 2, 2, 2, 0], "frets": [0, 0, 2, 2, 2, 0], "capo": 0},
+        "D": {"strings": [0, 0, 0, 2, 3, 2], "frets": [0, 0, 0, 2, 3, 2], "capo": 0},
+        "D-major": {"strings": [0, 0, 0, 2, 3, 2], "frets": [0, 0, 0, 2, 3, 2], "capo": 0},
+        "E": {"strings": [0, 2, 2, 1, 0, 0], "frets": [0, 2, 2, 1, 0, 0], "capo": 0},
+        "E-major": {"strings": [0, 2, 2, 1, 0, 0], "frets": [0, 2, 2, 1, 0, 0], "capo": 0},
+    }
+    
+    # Try to find exact match or partial match
+    chord_key = chord_name_clean
+    if chord_key not in common_chords:
+        # Try to extract base note
+        base_note = chord_name_clean[0] if len(chord_name_clean) > 0 else "C"
+        if base_note in common_chords:
+            chord_key = base_note
+        else:
+            # Default to C major
+            chord_key = "C"
+    
+    return common_chords.get(chord_key, common_chords["C"])
+
+
+def get_chord_notes(chord_name: str):
+    """Get musical notes for a chord"""
+    # Simplified note mapping - in a real app, you'd parse the chord name properly
+    chord_notes_map = {
+        "F": ["F", "A", "C"],
+        "F-major": ["F", "A", "C"],
+        "F1": ["F", "A", "C"],
+        "F2": ["F", "A", "C"],
+        "F3": ["F", "A", "C"],
+        "F4": ["F", "A", "C"],
+        "F5": ["F", "A", "C"],
+        "C": ["C", "E", "G"],
+        "C-major": ["C", "E", "G"],
+        "G": ["G", "B", "D"],
+        "G-major": ["G", "B", "D"],
+        "A": ["A", "C#", "E"],
+        "A-major": ["A", "C#", "E"],
+        "D": ["D", "F#", "A"],
+        "D-major": ["D", "F#", "A"],
+        "E": ["E", "G#", "B"],
+        "E-major": ["E", "G#", "B"],
+    }
+    
+    chord_name_clean = chord_name.strip()
+    chord_key = chord_name_clean
+    if chord_key not in chord_notes_map:
+        base_note = chord_name_clean[0] if len(chord_name_clean) > 0 else "C"
+        if base_note in chord_notes_map:
+            chord_key = base_note
+        else:
+            chord_key = "C"
+    
+    return chord_notes_map.get(chord_key, ["C", "E", "G"])
+
