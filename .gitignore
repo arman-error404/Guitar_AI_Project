@@ -8,3 +8,5 @@ models/chord_model.ipynb
 *.wav
 *.npy
 *.md
+*.h5
+*.json
