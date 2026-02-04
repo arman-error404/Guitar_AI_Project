@@ -10,4 +10,7 @@ notebook*.ipynb
 *.npy
 *.md
 *.h5
+*.pth
 saved_guitars/
+diffusion_inputs/
+diffusion_outputs/

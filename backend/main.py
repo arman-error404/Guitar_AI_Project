@@ -4,7 +4,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi import HTTPException
+from pydantic import BaseModel
 import cv2
 import numpy as np
 import tensorflow as tf
@@ -14,17 +16,34 @@ import time
 import joblib
 import json
 from datetime import datetime
+from typing import Optional
 
 app = FastAPI()
+
+# Create directories first before mounting
+GUITAR_IMAGES_DIR = "saved_guitars"
+DIFFUSION_INPUT_DIR = "diffusion_inputs"
+DIFFUSION_OUTPUT_DIR = "diffusion_outputs"
+os.makedirs(GUITAR_IMAGES_DIR, exist_ok=True)
+os.makedirs(DIFFUSION_INPUT_DIR, exist_ok=True)
+os.makedirs(DIFFUSION_OUTPUT_DIR, exist_ok=True)
+
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
-# Create directory for saved guitar images
-GUITAR_IMAGES_DIR = "saved_guitars"
-os.makedirs(GUITAR_IMAGES_DIR, exist_ok=True)
+# Directories are created above before app initialization
 
 @app.get("/")
 def home():
     return FileResponse("frontend/index.html")
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {"status": "ok", "endpoints": {
+        "generate_image": "/generate/image (POST)",
+        "get_image": "/generate/image/{filename} (GET)"
+    }}
 
 # Load models
 # Try to load guitar model - handle weights-only file
@@ -110,6 +129,9 @@ from utils.style_transfer import StyleTransferProcessor, AVAILABLE_STYLES
 # Load audio enhancement
 from utils.audio_gan import AudioEnhancementProcessor
 
+# Load diffusion model
+from utils.diffusion_model import get_generator
+
 # Initialize style transfer processor
 # Set use_gan=True to enable GAN-based style transfer (requires trained models)
 # Set use_gan=False to use filter-based approach (works immediately, no training needed)
@@ -122,6 +144,47 @@ current_style = "none"  # Default: no style
 # Set use_gan=False to use filter-based approach (works immediately, no training needed)
 USE_AUDIO_GAN = os.getenv("USE_AUDIO_GAN", "false").lower() == "true"
 audio_enhancer = AudioEnhancementProcessor(use_gan=USE_AUDIO_GAN)
+
+# Initialize diffusion generator (lazy loaded on first use)
+diffusion_generator = None
+
+# Chord input amplifier settings (auto gain + gentle saturation)
+CHORD_AMP_ENABLED = os.getenv("CHORD_AMP", "true").lower() == "true"
+CHORD_AMP_TARGET_RMS = float(os.getenv("CHORD_AMP_TARGET_RMS", "0.08"))
+CHORD_AMP_MAX_GAIN = float(os.getenv("CHORD_AMP_MAX_GAIN", "8.0"))
+CHORD_AMP_SOFT_CLIP = float(os.getenv("CHORD_AMP_SOFT_CLIP", "1.5"))
+CHORD_AMP_SILENCE_RMS = float(os.getenv("CHORD_AMP_SILENCE_RMS", "1e-4"))
+
+
+def amplify_chord_audio(audio: np.ndarray) -> tuple[np.ndarray, dict]:
+    """
+    Stabilize chord input loudness with automatic gain and soft clipping.
+    Returns the processed audio and stats for debugging.
+    """
+    if not CHORD_AMP_ENABLED:
+        return audio, {"enabled": False}
+
+    if audio.size == 0:
+        return audio, {"enabled": True, "status": "empty"}
+
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    if rms < CHORD_AMP_SILENCE_RMS:
+        return audio, {"enabled": True, "status": "silent", "rms": rms, "gain": 1.0}
+
+    gain = min(CHORD_AMP_MAX_GAIN, CHORD_AMP_TARGET_RMS / (rms + 1e-9))
+    amplified = audio * gain
+
+    if CHORD_AMP_SOFT_CLIP > 0:
+        # Gentle saturation to tame peaks without hard clipping
+        amplified = np.tanh(amplified * CHORD_AMP_SOFT_CLIP) / np.tanh(CHORD_AMP_SOFT_CLIP)
+
+    peak = float(np.max(np.abs(amplified)))
+    return amplified.astype(np.float32), {
+        "enabled": True,
+        "rms": rms,
+        "gain": float(gain),
+        "peak": peak
+    }
 
 # Camera
 cap = cv2.VideoCapture(0)
@@ -422,6 +485,11 @@ def chord():
         sd.wait()
         audio = audio.flatten()
 
+        # Stabilize input loudness for more consistent chord predictions
+        audio, amp_stats = amplify_chord_audio(audio)
+        if amp_stats.get("enabled"):
+            print(f"Chord amp stats: {amp_stats}")
+
         # Save audio to file for later use
         sf.write('last_audio.wav', audio, SAMPLE_RATE)
 
@@ -622,3 +690,83 @@ def get_chord_notes(chord_name: str):
     
     return chord_notes_map.get(chord_key, ["C", "E", "G"])
 
+
+# Diffusion model endpoints
+class GenerationRequest(BaseModel):
+    query: str
+    use_random_prompt: bool = True
+    num_inference_steps: int = 50
+    guidance_scale: float = 7.5
+    negative_prompt: str = ""
+
+
+@app.post("/generate/image")
+async def generate_image(request: GenerationRequest):
+    """Generate an image using Stable Diffusion 3 (Diffusers)."""
+    global diffusion_generator
+    
+    try:
+        # Lazy load the generator on first use
+        if diffusion_generator is None:
+            hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+            device = "auto"  # Prefer CUDA if available, else MPS, else CPU
+            diffusion_generator = get_generator(hf_token=hf_token, device=device)
+        
+        # Generate the image
+        image = diffusion_generator.generate_image(
+            query=request.query,
+            use_random_prompt=request.use_random_prompt,
+            num_inference_steps=request.num_inference_steps,
+            guidance_scale=request.guidance_scale,
+            negative_prompt=request.negative_prompt,
+        )
+        
+        # Save the generated image
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"generated_{timestamp}.png"
+        output_path = diffusion_generator.save_image(
+            image=image,
+            output_dir=DIFFUSION_OUTPUT_DIR,
+            filename=filename
+        )
+        
+        # Also save as JPEG for web display
+        jpeg_filename = filename.replace(".png", ".jpg")
+        jpeg_path = os.path.join(DIFFUSION_OUTPUT_DIR, jpeg_filename)
+        image_rgb = image.convert("RGB")
+        image_rgb.save(jpeg_path, "JPEG", quality=95)
+        
+        # Return the image path and serve it
+        return {
+            "success": True,
+            "image_path": output_path,
+            "image_url": f"/generate/image/{jpeg_filename}",
+            "filename": jpeg_filename,
+            "prompt_used": request.query
+        }
+        
+    except Exception as e:
+        print(f"Error generating image: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/generate/image/{filename}")
+async def get_generated_image(filename: str):
+    """Serve generated images"""
+    # Use absolute path to ensure we're looking in the right place
+    filepath = os.path.abspath(os.path.join(DIFFUSION_OUTPUT_DIR, filename))
+    
+    # Security: ensure the file is within the output directory
+    output_dir_abs = os.path.abspath(DIFFUSION_OUTPUT_DIR)
+    if not filepath.startswith(output_dir_abs):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if os.path.exists(filepath):
+        return FileResponse(filepath)
+    else:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Image not found: {filename}. Checked: {filepath}"
+        )

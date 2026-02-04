@@ -385,6 +385,7 @@ button.detect-btn:hover {
         <button class="tab-btn active" onclick="switchTab('guitar')">Guitar</button>
         <button class="tab-btn" onclick="switchTab('chord')">Chord</button>
         <button class="tab-btn" onclick="switchTab('style')">Style</button>
+        <button class="tab-btn" onclick="switchTab('generation')">Generation</button>
       </div>
 
       <!-- Guitar Tab -->
@@ -437,6 +438,44 @@ button.detect-btn:hover {
           <div class="style-grid" id="styleGrid"></div>
         </div>
       </div>
+
+      <!-- Generation Tab -->
+      <div id="generation-tab" class="tab-content">
+        <div class="card">
+          <h3>🎨 AI Image Generation</h3>
+          <div style="margin-bottom: 15px;">
+            <label for="generation-query" style="display: block; margin-bottom: 8px; color: #94a3b8; font-size: 14px;">
+              Enter your prompt:
+            </label>
+            <input 
+              type="text" 
+              id="generation-query" 
+              placeholder="e.g., a beautiful sunset over mountains"
+              style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: white; font-size: 14px; margin-bottom: 10px;"
+            />
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+              <input 
+                type="checkbox" 
+                id="use-random-prompt" 
+                checked
+                style="width: 18px; height: 18px; cursor: pointer;"
+              />
+              <label for="use-random-prompt" style="color: #94a3b8; font-size: 13px; cursor: pointer;">
+                Use random prompt enhancement
+              </label>
+            </div>
+          </div>
+          <button class="detect-btn" onclick="generateImage()" id="generate-btn">
+            Generate Image
+          </button>
+          <div id="generation-result" class="result-box" style="display: none; margin-top: 15px;">
+            <div id="generation-status" style="text-align: center; color: #94a3b8;"></div>
+            <div id="generated-image-container" style="margin-top: 15px; display: none;">
+              <img id="generated-image" style="width: 100%; border-radius: 8px; max-height: 400px; object-fit: contain;" />
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     </div>
   </div>
@@ -453,7 +492,7 @@ button.detect-btn:hover {
       // Update tab buttons
       document.querySelectorAll('.tab-btn').forEach((btn, index) => {
         btn.classList.remove('active');
-        const tabNames = ['guitar', 'chord', 'style'];
+        const tabNames = ['guitar', 'chord', 'style', 'generation'];
         if (tabNames[index] === tabName) {
           btn.classList.add('active');
         }
@@ -780,6 +819,71 @@ button.detect-btn:hover {
           svg.insertBefore(ledgerLine, circle);
         }
       });
+    }
+
+    // Image generation
+    async function generateImage() {
+      const queryInput = document.getElementById('generation-query');
+      const useRandom = document.getElementById('use-random-prompt').checked;
+      const resultBox = document.getElementById('generation-result');
+      const statusDiv = document.getElementById('generation-status');
+      const imageContainer = document.getElementById('generated-image-container');
+      const generatedImage = document.getElementById('generated-image');
+      const generateBtn = document.getElementById('generate-btn');
+      
+      const query = queryInput.value.trim();
+      
+      if (!query) {
+        alert('Please enter a prompt for image generation');
+        return;
+      }
+      
+      // Show loading state
+      resultBox.style.display = 'flex';
+      imageContainer.style.display = 'none';
+      statusDiv.textContent = 'Generating image... This may take a minute.';
+      statusDiv.style.color = '#60a5fa';
+      generateBtn.disabled = true;
+      generateBtn.textContent = 'Generating...';
+      
+      try {
+        const response = await fetch('/generate/image', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: query,
+            use_random_prompt: useRandom,
+            num_inference_steps: 50,
+            guidance_scale: 7.5
+          })
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || 'Failed to generate image');
+        }
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          // Display the generated image
+          generatedImage.src = data.image_url;
+          imageContainer.style.display = 'block';
+          statusDiv.textContent = 'Image generated successfully!';
+          statusDiv.style.color = '#22c55e';
+        } else {
+          throw new Error('Generation failed');
+        }
+      } catch (error) {
+        statusDiv.textContent = `Error: ${error.message}`;
+        statusDiv.style.color = '#ef4444';
+        console.error('Image generation error:', error);
+      } finally {
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Image';
+      }
     }
 
     // Initialize on load
