@@ -702,8 +702,8 @@ class GenerationRequest(BaseModel):
 
 @app.post("/generate/image")
 async def generate_image(request: GenerationRequest):
-    """Generate an image using Stable Diffusion 3 (Diffusers)."""
-    global diffusion_generator
+    """Generate an image using the captured camera frame (img2img) and prompt."""
+    global diffusion_generator, latest_frame, lock
     
     try:
         # Lazy load the generator on first use
@@ -712,8 +712,25 @@ async def generate_image(request: GenerationRequest):
             device = "auto"  # Prefer CUDA if available, else MPS, else CPU
             diffusion_generator = get_generator(hf_token=hf_token, device=device)
         
-        # Generate the image
-        image = diffusion_generator.generate_image(
+        # Capture current frame and save to diffusion_inputs
+        with lock:
+            frame = latest_frame.copy() if latest_frame is not None else None
+        if frame is None:
+            raise HTTPException(status_code=400, detail="No camera frame available. Please ensure the camera is on.")
+        
+        from PIL import Image
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        init_pil = Image.fromarray(frame_rgb)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        captured_filename = f"captured_{timestamp}.png"
+        captured_path = os.path.join(DIFFUSION_INPUT_DIR, captured_filename)
+        os.makedirs(DIFFUSION_INPUT_DIR, exist_ok=True)
+        init_pil.save(captured_path)
+        captured_image_url = f"/diffusion/input/{captured_filename}"
+        
+        # Generate using the captured frame (img2img)
+        image = diffusion_generator.generate_image_from_image(
+            image=init_pil,
             query=request.query,
             use_random_prompt=request.use_random_prompt,
             num_inference_steps=request.num_inference_steps,
@@ -721,30 +738,26 @@ async def generate_image(request: GenerationRequest):
             negative_prompt=request.negative_prompt,
         )
         
-        # Save the generated image
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"generated_{timestamp}.png"
+        # Save the generated image once (PNG only; served as-is)
+        output_filename = f"generated_{timestamp}.png"
         output_path = diffusion_generator.save_image(
             image=image,
             output_dir=DIFFUSION_OUTPUT_DIR,
-            filename=filename
+            filename=output_filename
         )
         
-        # Also save as JPEG for web display
-        jpeg_filename = filename.replace(".png", ".jpg")
-        jpeg_path = os.path.join(DIFFUSION_OUTPUT_DIR, jpeg_filename)
-        image_rgb = image.convert("RGB")
-        image_rgb.save(jpeg_path, "JPEG", quality=95)
-        
-        # Return the image path and serve it
         return {
             "success": True,
             "image_path": output_path,
-            "image_url": f"/generate/image/{jpeg_filename}",
-            "filename": jpeg_filename,
+            "image_url": f"/generate/image/{output_filename}",
+            "filename": output_filename,
+            "captured_image_url": captured_image_url,
+            "captured_filename": captured_filename,
             "prompt_used": request.query
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error generating image: {e}")
         import traceback
@@ -754,19 +767,23 @@ async def generate_image(request: GenerationRequest):
 
 @app.get("/generate/image/{filename}")
 async def get_generated_image(filename: str):
-    """Serve generated images"""
-    # Use absolute path to ensure we're looking in the right place
+    """Serve generated images from diffusion_outputs (PNG)."""
     filepath = os.path.abspath(os.path.join(DIFFUSION_OUTPUT_DIR, filename))
-    
-    # Security: ensure the file is within the output directory
     output_dir_abs = os.path.abspath(DIFFUSION_OUTPUT_DIR)
     if not filepath.startswith(output_dir_abs):
         raise HTTPException(status_code=403, detail="Access denied")
-    
     if os.path.exists(filepath):
         return FileResponse(filepath)
-    else:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Image not found: {filename}. Checked: {filepath}"
-        )
+    raise HTTPException(status_code=404, detail=f"Image not found: {filename}")
+
+
+@app.get("/diffusion/input/{filename}")
+async def get_diffusion_input(filename: str):
+    """Serve captured input images from diffusion_inputs."""
+    filepath = os.path.abspath(os.path.join(DIFFUSION_INPUT_DIR, filename))
+    input_dir_abs = os.path.abspath(DIFFUSION_INPUT_DIR)
+    if not filepath.startswith(input_dir_abs):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if os.path.exists(filepath):
+        return FileResponse(filepath)
+    raise HTTPException(status_code=404, detail=f"Image not found: {filename}")

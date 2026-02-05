@@ -7,7 +7,7 @@ Apple devices: runs on MPS with bfloat16 (when available).
 """
 import os
 import torch
-from diffusers import DiffusionPipeline
+from diffusers import DiffusionPipeline, StableDiffusionImg2ImgPipeline
 from PIL import Image
 import random
 from typing import Optional
@@ -15,7 +15,7 @@ from datetime import datetime
 
 
 class DiffusionGenerator:
-    """Wrapper for a Diffusers text-to-image pipeline."""
+    """Wrapper for a Diffusers text-to-image and image-to-image pipeline."""
     
     def __init__(self, hf_token: Optional[str] = None, device: str = "auto"):
         """
@@ -27,6 +27,7 @@ class DiffusionGenerator:
         """
         self.device = device
         self.pipe = None
+        self.pipe_img2img = None
         self.hf_token = (
             hf_token
             or os.getenv("HF_TOKEN")
@@ -105,6 +106,9 @@ class DiffusionGenerator:
             
             print(f"✅ Successfully loaded model: {model_id}")
             print(f"✅ Diffusion model loaded on device: {self.device}")
+            self._model_id = model_id
+            self._token = token
+            self._dtype = getattr(self.pipe, "dtype", None) or getattr(self.pipe.unet, "dtype", torch.float32)
             
         except Exception as e:
             print(f"❌ Error loading diffusion model: {e}")
@@ -186,7 +190,76 @@ class DiffusionGenerator:
         except Exception as e:
             print(f"❌ Error generating image: {e}")
             raise
-    
+
+    def _load_img2img(self):
+        """Lazy-load the img2img pipeline (same model as text2img)."""
+        if self.pipe_img2img is not None:
+            return
+        model_id = getattr(self, "_model_id", os.getenv("DIFFUSION_MODEL_ID", "OFA-Sys/small-stable-diffusion-v0"))
+        token = getattr(self, "_token", self.hf_token)
+        dtype = getattr(self, "_dtype", torch.float32)
+        try:
+            print(f"Loading img2img pipeline: {model_id}...")
+            self.pipe_img2img = StableDiffusionImg2ImgPipeline.from_pretrained(
+                model_id,
+                torch_dtype=dtype,
+                token=token if token else None,
+            )
+            if self.device == "mps":
+                self.pipe_img2img = self.pipe_img2img.to("mps")
+            elif self.device == "cuda":
+                self.pipe_img2img = self.pipe_img2img.to("cuda")
+            else:
+                self.pipe_img2img = self.pipe_img2img.to("cpu")
+            print("✅ Img2img pipeline loaded")
+        except Exception as e:
+            print(f"⚠️ Img2img pipeline not available ({e}), will use text2img only")
+            self.pipe_img2img = False  # mark as tried-and-failed
+
+    def generate_image_from_image(
+        self,
+        image: Image.Image,
+        query: str,
+        use_random_prompt: bool = True,
+        strength: float = 0.75,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 7.5,
+        negative_prompt: str = "",
+    ) -> Image.Image:
+        """
+        Generate an image from an initial image (img2img) and a text prompt.
+        Falls back to text2img if img2img pipeline is not available.
+        """
+        self._load_img2img()
+        if self.pipe_img2img is False:
+            # Fallback to text-only generation
+            return self.generate_image(
+                query=query,
+                use_random_prompt=use_random_prompt,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                negative_prompt=negative_prompt,
+            )
+        if use_random_prompt and query:
+            template = random.choice(self.prompt_templates)
+            prompt = template.format(query=query)
+        else:
+            prompt = query if query else ""
+        # Resize init image to model-friendly size (e.g. 512x512)
+        init_image = image.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
+        print(f"Generating image from frame with prompt: {prompt}")
+        result = self.pipe_img2img(
+            prompt=prompt,
+            image=init_image,
+            strength=strength,
+            negative_prompt=negative_prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+        )
+        out = result.images[0]
+        print("✅ Image generated from frame successfully")
+        return out
+
     def save_image(self, image: Image.Image, output_dir: str, filename: Optional[str] = None) -> str:
         """
         Save generated image to disk

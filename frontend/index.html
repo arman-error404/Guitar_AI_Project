@@ -376,6 +376,19 @@ button.detect-btn:hover {
         <div class="video-container">
           <img src="/video" id="videoFeed" alt="Camera Feed"/>
         </div>
+        <!-- Captured + Generated preview (shown after generation, does not go blank) -->
+        <div id="diffusion-preview" style="display: none; margin-top: 12px; padding: 8px; background: #0f172a; border-radius: 8px; border: 1px solid #334155;">
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 140px;">
+              <div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">Captured frame</div>
+              <img id="captured-frame-preview" alt="Captured" style="width: 100%; max-height: 200px; object-fit: contain; border-radius: 6px; background: #1e293b;" />
+            </div>
+            <div style="flex: 1; min-width: 140px;">
+              <div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">Generated</div>
+              <img id="generated-frame-preview" alt="Generated" style="width: 100%; max-height: 200px; object-fit: contain; border-radius: 6px; background: #1e293b;" />
+            </div>
+          </div>
+        </div>
       </div>
 
     <!-- Right sidebar with tabs -->
@@ -470,8 +483,15 @@ button.detect-btn:hover {
           </button>
           <div id="generation-result" class="result-box" style="display: none; margin-top: 15px;">
             <div id="generation-status" style="text-align: center; color: #94a3b8;"></div>
-            <div id="generated-image-container" style="margin-top: 15px; display: none;">
-              <img id="generated-image" style="width: 100%; border-radius: 8px; max-height: 400px; object-fit: contain;" />
+            <div id="generated-image-container" style="margin-top: 15px; display: flex; gap: 12px; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 120px;">
+                <div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">Captured frame</div>
+                <img id="captured-image" style="width: 100%; border-radius: 8px; max-height: 280px; object-fit: contain; background: #1e293b;" alt="Captured" />
+              </div>
+              <div style="flex: 1; min-width: 120px;">
+                <div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">Generated</div>
+                <img id="generated-image" style="width: 100%; border-radius: 8px; max-height: 280px; object-fit: contain; background: #1e293b;" alt="Generated" />
+              </div>
             </div>
           </div>
         </div>
@@ -821,14 +841,18 @@ button.detect-btn:hover {
       });
     }
 
-    // Image generation
+    // Image generation (uses captured camera frame; shows both captured and generated)
     async function generateImage() {
       const queryInput = document.getElementById('generation-query');
       const useRandom = document.getElementById('use-random-prompt').checked;
       const resultBox = document.getElementById('generation-result');
       const statusDiv = document.getElementById('generation-status');
       const imageContainer = document.getElementById('generated-image-container');
+      const capturedImage = document.getElementById('captured-image');
       const generatedImage = document.getElementById('generated-image');
+      const diffusionPreview = document.getElementById('diffusion-preview');
+      const capturedFramePreview = document.getElementById('captured-frame-preview');
+      const generatedFramePreview = document.getElementById('generated-frame-preview');
       const generateBtn = document.getElementById('generate-btn');
       
       const query = queryInput.value.trim();
@@ -838,10 +862,10 @@ button.detect-btn:hover {
         return;
       }
       
-      // Show loading state
+      // Show result box and loading state; keep previous images visible until new ones load
       resultBox.style.display = 'flex';
-      imageContainer.style.display = 'none';
-      statusDiv.textContent = 'Generating image... This may take a minute.';
+      imageContainer.style.display = 'flex';
+      statusDiv.textContent = 'Capturing frame and generating... This may take a minute.';
       statusDiv.style.color = '#60a5fa';
       generateBtn.disabled = true;
       generateBtn.textContent = 'Generating...';
@@ -861,18 +885,22 @@ button.detect-btn:hover {
         });
         
         if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.detail || 'Failed to generate image');
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to generate image');
         }
         
         const data = await response.json();
         
         if (data.success) {
-          // Display the generated image
+          // Show both captured and generated (right sidebar and left preview)
+          capturedImage.src = data.captured_image_url;
           generatedImage.src = data.image_url;
-          imageContainer.style.display = 'block';
           statusDiv.textContent = 'Image generated successfully!';
           statusDiv.style.color = '#22c55e';
+          // Also show on left side so it does not go blank
+          diffusionPreview.style.display = 'block';
+          capturedFramePreview.src = data.captured_image_url;
+          generatedFramePreview.src = data.image_url;
         } else {
           throw new Error('Generation failed');
         }
